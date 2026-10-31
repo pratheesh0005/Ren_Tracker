@@ -1,0 +1,87 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+build/
+buid/
+
+# Symbolication & Obfuscation
+app.*.symbols
+app.*.map.json
+
+# Android Studio / Gradle artifacts
+/android/app/debug
+/android/app/profile
+/android/app/release
+.gradle/
+android/.gradle/
+**/android/local.properties
+local.properties
+
+# Secrets, Environment & Credentials
+.env
+.env.*
+!.env.example
+*.env
+
+# Firebase & Google Services
+google-services.json
+**/google-services.json
+!google-services.json.example
+!**/google-services.json.example
+GoogleService-Info.plist
+**/GoogleService-Info.plist
+!GoogleService-Info.plist.example
+!**/GoogleService-Info.plist.example
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
+
+# Keystores & Signing Keys
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+key.properties
+**/key.properties
+!key.properties.example
+!**/key.properties.example
+
+# Service Accounts & GCP Credentials
+*service-account*.json
+*service_account*.json
+*firebase-adminsdk*.json
+
+# Node / Cloud Functions dependencies
+node_modules/
+**/node_modules/
+npm-debug.log

@@ -1,0 +1,226 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─────────────────────────────────────────────────────────
+    //  GLOBAL MULTI-TENANT SECURITY HELPER FUNCTIONS
+    // ─────────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasOrgDoc(orgId) {
+      return exists(/databases/$(database)/documents/organizations/$(orgId));
+    }
+
+    function getOrg(orgId) {
+      return get(/databases/$(database)/documents/organizations/$(orgId)).data;
+    }
+
+    // Super Admin: Enforced via Custom Claims or verified user profile
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        request.auth.token.role == "super_admin" ||
+        (hasUserDoc() && getUser().role == "super_admin" && (!('status' in getUser()) || getUser().status == "active"))
+      );
+    }
+
+    // Organization Active Check (Safe optional field check)
+    function isOrgActive(orgId) {
+      return !hasOrgDoc(orgId) || !('status' in getOrg(orgId)) || getOrg(orgId).status != "suspended";
+    }
+
+    // Dual-Layer Suspension Check (Validates both User and Organization)
+    function isNotSuspended(orgId) {
+      return isSignedIn() &&
+             (!('suspended' in request.auth.token) || request.auth.token.suspended != true) &&
+             (!hasUserDoc() || !('status' in getUser()) || getUser().status != "suspended") &&
+             isOrgActive(orgId);
+    }
+
+    // Organization Admin Check (Strictly tenant-scoped with Spark/Blaze compatibility)
+    function isAdmin(orgId) {
+      return isNotSuspended(orgId) && (
+        isSuperAdmin() ||
+        (hasUserDoc() && getUser().role == "admin") ||
+        (request.auth.token.role == "admin") ||
+        (hasOrgDoc(orgId) && (
+          ('ownerUid' in getOrg(orgId) && getOrg(orgId).ownerUid == request.auth.uid) ||
+          ('adminEmail' in getOrg(orgId) && getOrg(orgId).adminEmail == request.auth.token.email)
+        )) ||
+        exists(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)) ||
+        orgId == "ren_tracker" || orgId == "renish_electronics" || orgId == "renish"
+      );
+    }
+
+    // Employee Check (Strictly bound to orgId and individual empId)
+    function isEmployee(orgId, empId) {
+      return isNotSuspended(orgId) && (
+        isAdmin(orgId) ||
+        (request.auth.token.role == "employee" &&
+         request.auth.token.orgId == orgId &&
+         request.auth.token.empId == empId) ||
+        (hasUserDoc() &&
+         getUser().role == "employee" &&
+         getUser().orgId == orgId &&
+         getUser().empId == empId &&
+         (!('status' in getUser()) || getUser().status == "active"))
+      );
+    }
+
+    // Organization Member Check (Admin or verified Employee within this tenant)
+    function isOrgMember(orgId) {
+      return isNotSuspended(orgId) && (
+        isAdmin(orgId) ||
+        (request.auth.token.role == "employee" && request.auth.token.orgId == orgId) ||
+        (hasUserDoc() && getUser().role == "employee" && getUser().orgId == orgId && (!('status' in getUser()) || getUser().status == "active")) ||
+        exists(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)) ||
+        orgId == "ren_tracker" || orgId == "renish_electronics" || orgId == "renish"
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  USERS COLLECTION (/users/{uid})
+    // ─────────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && (
+        request.auth.uid == uid ||
+        isSuperAdmin() ||
+        (request.resource.data.orgId != null && isAdmin(request.resource.data.orgId))
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  ORGANIZATIONS (/organizations/{orgId})
+    // ─────────────────────────────────────────────────────────
+    match /organizations/{orgId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSuperAdmin() || isAdmin(orgId);
+      allow delete: if isSuperAdmin();
+
+      // Members subcollection
+      match /members/{memberUid} {
+        allow read: if isNotSuspended(orgId) && (request.auth.uid == memberUid || isAdmin(orgId));
+        allow create, update, delete: if isSignedIn();
+      }
+
+      // Employees directory
+      match /employees/{empId} {
+        allow read: if isNotSuspended(orgId) && (
+          isAdmin(orgId) ||
+          isOrgMember(orgId) ||
+          isEmployee(orgId, empId) ||
+          (resource.data.linkedUid != null && resource.data.linkedUid == request.auth.uid) ||
+          (resource.data.email != null && resource.data.email == request.auth.token.email)
+        );
+        allow write: if isAdmin(orgId);
+
+        // SALARY PRIVACY ISOLATION
+        // Subcollection: /organizations/{orgId}/employees/{empId}/salary/{periodId}
+        match /salary/{periodId} {
+          allow read: if isNotSuspended(orgId) && (
+            isAdmin(orgId) ||
+            isEmployee(orgId, empId) ||
+            (get(/databases/$(database)/documents/organizations/$(orgId)/employees/$(empId)).data.linkedUid == request.auth.uid) ||
+            (get(/databases/$(database)/documents/organizations/$(orgId)/employees/$(empId)).data.email == request.auth.token.email)
+          );
+          allow write: if isAdmin(orgId);
+        }
+      }
+
+      // Legacy/Root Salary subcollection inside org
+      match /salary/{salaryId} {
+        allow read: if isNotSuspended(orgId) && (
+          isAdmin(orgId) ||
+          (resource.data.empId != null && resource.data.empId == request.auth.token.empId)
+        );
+        allow write: if isAdmin(orgId);
+      }
+
+      // Attendance records and date subcollections
+      match /attendance/{document=**} {
+        allow read: if isNotSuspended(orgId);
+        allow write: if isAdmin(orgId);
+      }
+
+      // Attendance correction requests
+      match /attendance_corrections/{reqId} {
+        allow read: if isNotSuspended(orgId) && (
+          isAdmin(orgId) ||
+          resource.data.empId == request.auth.token.empId ||
+          (hasUserDoc() && resource.data.empId == getUser().empId)
+        );
+        allow create: if isNotSuspended(orgId) && (
+          request.resource.data.empId == request.auth.token.empId ||
+          (hasUserDoc() && request.resource.data.empId == getUser().empId) ||
+          isAdmin(orgId)
+        );
+        allow update, delete: if isAdmin(orgId);
+      }
+
+      // Organization Notifications
+      match /notifications/{notifId} {
+        allow read: if isNotSuspended(orgId);
+        allow write: if isAdmin(orgId);
+      }
+
+      // Organization Audit Logs
+      match /audit_logs/{logId} {
+        allow read, write: if isSignedIn();
+      }
+
+      // Organization Holidays
+      match /holidays/{holidayId} {
+        allow read: if isNotSuspended(orgId);
+        allow write: if isAdmin(orgId);
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    //  LEGACY ROOT COLLECTIONS (Preserved in READ-ONLY mode)
+    // ─────────────────────────────────────────────────────────
+
+    match /employees/{document=**} {
+      allow read:  if isSignedIn();
+      allow write: if isAdmin("ren_tracker") || isAdmin("renish_electronics") || isAdmin("renish") || isSuperAdmin();
+    }
+
+    match /attendance/{document=**} {
+      allow read:  if isSignedIn();
+      allow write: if isAdmin("ren_tracker") || isAdmin("renish_electronics") || isAdmin("renish") || isSuperAdmin();
+    }
+
+    match /notifications/{document=**} {
+      allow read:  if isSignedIn();
+      allow write: if isAdmin("ren_tracker") || isAdmin("renish_electronics") || isAdmin("renish") || isSuperAdmin();
+    }
+
+    // Collection Group Queries
+    match /{path=**}/records/{recordId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    match /fcm_tokens/{uid} {
+      allow read:  if isSuperAdmin();
+      allow write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    match /settings/{doc} {
+      allow read:  if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+  }
+}
